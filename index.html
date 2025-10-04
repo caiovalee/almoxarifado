@@ -12,7 +12,7 @@
   <!-- React + ReactDOM UMD -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <!-- Babel para compilar JSX no navegador (bom para testar rapidamente) -->
+  <!-- Babel para compilar JSX no navegador -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <script type="text/babel" data-presets="react">
@@ -23,22 +23,12 @@
     // =============================
     function uid() { return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
     function classNames(...xs) { return xs.filter(Boolean).join(" "); }
-    function todayISO() { const d=new Date(); const tz=d.getTimezoneOffset(); const local=new Date(d.getTime()-tz*60000); return local.toISOString().slice(0,10); }
     function parseDate(d){ if(!d) return null; const [y,m,day]=d.split("-").map(n=>parseInt(n,10)); if(!y||!m||!day) return null; return new Date(y,m-1,day); }
     function daysUntil(dateISO){ const d=parseDate(dateISO); if(!d) return null; const now=new Date(); const ms=d.setHours(23,59,59,999)-now.getTime(); return Math.ceil(ms/86400000); }
     function validadeStatus(it){ if(!it.validade) return {label:"—", tone:"muted"}; const dias=daysUntil(it.validade); if(dias==null) return {label:it.validade, tone:"muted"}; if(dias<0) return {label:`Vencido há ${Math.abs(dias)}d`, tone:"danger"}; if(dias===0) return {label:"Vence hoje", tone:"warning"}; if(dias<=30) return {label:`Vence em ${dias}d`, tone:"warning"}; return {label:it.validade, tone:"ok"}; }
     function lowStock(it){ return it.quantidade < (isFinite(it.min)? it.min : 0); }
 
     const CATEGORIAS_PADRAO = ["Remédios","Cuidados Pessoais","Papelaria","Diversos"];
-
-    // ===== Helpers de criptografia (AES-GCM + PBKDF2) =====
-    const hasSubtle = typeof window !== 'undefined' && window.crypto && window.crypto.subtle;
-    function b64enc(bytes){ const arr=bytes instanceof Uint8Array? bytes : new Uint8Array(bytes); let s=""; for(let i=0;i<arr.length;i++) s+=String.fromCharCode(arr[i]); return btoa(s); }
-    function b64dec(str){ const bin=atob(str); const arr=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i); return arr.buffer; }
-    function randBytes(n){ const a=new Uint8Array(n); window.crypto.getRandomValues(a); return a; }
-    async function deriveKey(password, saltBytes){ const enc=new TextEncoder(); const keyMaterial=await window.crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]); return window.crypto.subtle.deriveKey({name:"PBKDF2", salt:saltBytes, iterations:150000, hash:"SHA-256"}, keyMaterial, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]); }
-    async function encryptJSON(obj, password){ if(!hasSubtle) throw new Error("Criptografia não suportada"); const enc=new TextEncoder(); const salt=randBytes(16); const iv=randBytes(12); const key=await deriveKey(password, salt); const data=enc.encode(JSON.stringify(obj)); const ct=await window.crypto.subtle.encrypt({name:"AES-GCM", iv}, key, data); return { __enc:1, salt:b64enc(salt), iv:b64enc(iv), data:b64enc(ct) }; }
-    async function decryptJSON(record, password){ if(!record||!record.__enc) return record; const dec=new TextDecoder(); const salt=new Uint8Array(b64dec(record.salt)); const iv=new Uint8Array(b64dec(record.iv)); const key=await deriveKey(password, salt); const ct=b64dec(record.data); const plain=await window.crypto.subtle.decrypt({name:"AES-GCM", iv}, key, ct); return JSON.parse(dec.decode(plain)); }
 
     // ===== UI primitives =====
     const Pill = ({ children, tone = "muted" }) => (
@@ -61,7 +51,6 @@
 
     const Icon = {
       Plus:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M12 5v14M5 12h14"/></svg>),
-      Printer:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M6 9V4h12v5M6 18h12v2H6z"/><rect x="4" y="9" width="16" height="8" rx="2" strokeWidth="2"/></svg>),
       Trash:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>),
       Edit:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M4 20l4-1 9-9a2.5 2.5 0 10-3.5-3.5L4.5 15.5 4 20z"/></svg>),
       Search:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4" {...p}><circle cx="11" cy="11" r="7" strokeWidth="2"/><path strokeWidth="2" strokeLinecap="round" d="M20 20l-3-3"/></svg>),
@@ -70,23 +59,8 @@
       Minus:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4" {...p}><path strokeWidth="2" strokeLinecap="round" d="M5 12h14"/></svg>)
     };
 
-    // ===== storage simples =====
-    function useLocalStorage(key, initial){
-      const [state, setState] = useState(()=>{ try{ const raw=localStorage.getItem(key); return raw? JSON.parse(raw): initial; }catch{ return initial; } });
-      useEffect(()=>{ try{ document.documentElement.classList.remove('dark'); localStorage.removeItem('almoxarifado-dark'); }catch{} try{ localStorage.setItem(key, JSON.stringify(state)); }catch{} },[key,state]);
-      return [state, setState];
-    }
-
-    // ===== Perfis =====
-    const LS_PROFILES = "almoxarifado-profiles-v1";
-    const LS_ACTIVE = "almoxarifado-active-profile-v1";
-    const LS_DATA_PREFIX = "almoxarifado-data-v1::"; // + profileId
-    const LS_KEY_OLD = "almoxarifado-items-v1";
-    const LS_CAT_OLD = "almoxarifado-categorias-v1";
-
-    function defaultProfiles(){ return [ {id:"voce", name:"Você", protected:false}, {id:"namorada", name:"Namorada", protected:false} ]; }
-
-    function Header({ onAdd, onPrint, comprasCount, onShowCompras, profiles, activeId, setActiveId, onManageProfiles }){
+    // ===== Header (sem perfis e sem imprimir) =====
+    function Header({ onAdd, onShowCompras, comprasCount }){
       return (
         <header className="sticky top-0 z-20 backdrop-blur bg-white/70 border-b border-slate-200">
           <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap gap-2 items-center justify-between">
@@ -94,17 +68,12 @@
               <div className="w-9 h-9 rounded-2xl bg-indigo-600 text-white grid place-items-center font-bold shadow">AP</div>
               <div>
                 <h1 className="text-xl font-bold text-slate-900">Almoxarifado Pessoal</h1>
-                <p className="text-xs text-slate-500">Inventário por perfil, com senha opcional</p>
+                <p className="text-xs text-slate-500">Inventário pessoal simples</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <select value={activeId} onChange={(e)=>setActiveId(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-900">
-                {profiles.map(p=> <option key={p.id} value={p.id}>{p.name}{p.protected?" (🔒)":""}</option>)}
-              </select>
-              <button onClick={onManageProfiles} className="px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50">Gerenciar perfis</button>
               <button onClick={onShowCompras} className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center gap-2"><Icon.Cart/> Lista de compras {comprasCount>0 && <span className="ml-1 text-emerald-200">({comprasCount})</span>}</button>
               <button onClick={onAdd} className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white inline-flex items-center gap-2"><Icon.Plus/> Novo item</button>
-              <button onClick={onPrint} className="px-3 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 inline-flex items-center gap-2"><Icon.Printer/> Imprimir</button>
             </div>
           </div>
         </header>
@@ -206,53 +175,6 @@
           </div>
         </Modal> ); }
 
-    function ManageProfilesModal({ open, onClose, profiles, setProfiles, activeId, setActiveId, getCounts, encSupport, encryptAll, decryptAll }){
-      const [novo, setNovo] = useState("");
-      if(!open) return null;
-      function addPerfil(){ const name=(novo||"").trim(); if(!name) return; const slug = name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || uid(); const idBase=slug || uid(); let id=idBase; let i=1; while(profiles.some(p=>p.id===id)) { id=`${idBase}-${i++}`; } const p={id, name, protected:false}; setProfiles(prev=> [...prev, p]); setNovo(""); setActiveId(id); }
-      function renamePerfil(p){ const name=prompt(`Renomear perfil "${p.name}" para:`, p.name); if(!name||!name.trim()) return; setProfiles(prev=> prev.map(x=> x.id===p.id? {...x, name:name.trim()}: x)); }
-      function removePerfil(p){ if(!confirm(`Remover perfil "${p.name}" e todos os dados?`)) return; try{ localStorage.removeItem(LS_DATA_PREFIX+p.id); }catch{} setProfiles(prev=> prev.filter(x=> x.id!==p.id)); if(activeId===p.id){ const next=(profiles.find(x=> x.id!==p.id) || {id:"", name:"", protected:false}).id; setActiveId(next || "voce"); }
-      }
-      async function setSenha(p){ if(!encSupport){ alert('Seu navegador não suporta criptografia Web Crypto.'); return; } if(p.protected){ const atual = prompt('Senha atual do perfil:'); if(!atual) return; try{ await decryptAll(p.id, atual); }catch{ alert('Senha atual incorreta.'); return; } const nova = prompt('Nova senha:'); if(!nova) return; await encryptAll(p.id, nova); setProfiles(prev=> prev.map(x=> x.id===p.id? {...x, protected:true}: x)); alert('Senha alterada.'); } else { const senha = prompt('Defina uma senha para este perfil:'); if(!senha) return; await encryptAll(p.id, senha); setProfiles(prev=> prev.map(x=> x.id===p.id? {...x, protected:true}: x)); alert('Perfil protegido por senha.'); } }
-      async function removerSenha(p){ if(!encSupport){ alert('Navegador sem Web Crypto.'); return; } if(!p.protected) return; const senha=prompt('Informe a senha atual para remover a proteção:'); if(!senha) return; try{ await decryptAll(p.id, senha, true); setProfiles(prev=> prev.map(x=> x.id===p.id? {...x, protected:false}: x)); alert('Proteção removida.'); }catch{ alert('Senha incorreta.'); }
-      }
-      return (
-        <Modal open={open} onClose={onClose} title="Gerenciar perfis">
-          <div className="space-y-3">
-            <div className="flex gap-2"><input value={novo} onChange={(e)=>setNovo(e.target.value)} placeholder="Novo perfil" className="flex-1 px-3 py-2 rounded-xl border border-slate-300 bg-white"/><button onClick={addPerfil} className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white">Adicionar</button></div>
-            <ul className="divide-y divide-slate-200">
-              {profiles.map((p)=> (
-                <li key={p.id} className="py-2 flex items-center justify-between">
-                  <div className="flex flex-col">
-                    <div className="flex items-center gap-2"><strong className="text-slate-900">{p.name}</strong>{p.protected && <Pill tone="muted">🔒 protegido</Pill>}{activeId===p.id && <Pill tone="ok">ativo</Pill>}</div>
-                    <span className="text-xs text-slate-500">{getCounts(p.id)}</span>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button onClick={()=>renamePerfil(p)} className="px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50 inline-flex items-center gap-1"><Icon.Edit/> Renomear</button>
-                    {!p.protected && <button onClick={()=>setSenha(p)} className="px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50">Definir senha</button>}
-                    {p.protected && <button onClick={()=>setSenha(p)} className="px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50">Alterar senha</button>}
-                    {p.protected && <button onClick={()=>removerSenha(p)} className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white">Remover proteção</button>}
-                    <button onClick={()=>removePerfil(p)} className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white inline-flex items-center gap-1"><Icon.Trash/> Remover</button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-            {!encSupport && <p className="text-xs text-amber-700 bg-amber-50 p-2 rounded-lg">Seu navegador não suporta Web Crypto; a opção de senha ficará indisponível.</p>}
-          </div>
-        </Modal>
-      );
-    }
-
-    function UnlockModal({ open, onClose, onUnlock, profileName }){ const [pw,setPw]=useState(""); if(!open) return null; return (
-      <Modal open={open} onClose={onClose} title={`Desbloquear perfil \"${profileName}\"`}>
-        <div className="space-y-3">
-          <p className="text-sm text-slate-600">Este perfil está protegido por senha. Digite a senha para carregar os dados.</p>
-          <input type="password" autoFocus value={pw} onChange={(e)=>setPw(e.target.value)} placeholder="Senha" className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white"/>
-          <div className="flex justify-end gap-2"><button onClick={onClose} className="px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50">Cancelar</button><button onClick={()=>onUnlock(pw)} className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white">Desbloquear</button></div>
-        </div>
-      </Modal>
-    ); }
-
     function ItemForm({ initial, onSubmit, onCancel, categorias, onCreateCategoria }){
       const [form, setForm] = useState(()=> initial || ({ id:uid(), nome:"", categoria:"Remédios", quantidade:1, unidade:"un", min:0, validade:"", local:"", notas:"", createdAt:Date.now(), updatedAt:Date.now() }));
       useEffect(()=>{ if(initial) setForm(initial); },[initial]);
@@ -278,7 +200,7 @@
       );
     }
 
-    function ComprasView({ items, onPrint }){
+    function ComprasView({ items }){
       const lista = items.filter(it=> lowStock(it) || validadeStatus(it).tone==="danger");
       const texto = lista.map(it=> `- ${it.nome} (${it.categoria}) — estoque: ${it.quantidade} ${it.unidade||"un"} | mín: ${isFinite(it.min)?it.min:0}${it.validade?` | validade: ${it.validade}`:""}`).join("\n");
       function copiar(){ navigator.clipboard?.writeText(texto).then(()=>alert("Lista copiada.")) .catch(()=>{ prompt("Copie a lista:", texto); }); }
@@ -296,67 +218,67 @@
                 <div><Pill tone={lowStock(it)?"danger":"warning"}>{lowStock(it)?"Repor":"Atenção"}</Pill></div>
               </li> ); })}
           </ul>
-          {lista.length>0 && <div className="mt-4 flex gap-2"><button onClick={copiar} className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white">Copiar lista</button><button onClick={onPrint} className="px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50">Imprimir</button></div>}
+          {lista.length>0 && <div className="mt-4 flex gap-2"><button onClick={copiar} className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white">Copiar lista</button></div>}
           <pre className="mt-4 p-3 bg-slate-50 rounded-xl text-sm overflow-auto whitespace-pre-wrap">{texto||""}</pre>
         </div>
       );
     }
 
+    // ===== Persistência simples (sem perfis) =====
+    const LS_ITEMS = "almoxarifado-items-v2";
+    const LS_CATS  = "almoxarifado-categorias-v2";
+    // chaves antigas p/ migração opcional
+    const OLD_ITEMS = "almoxarifado-items-v1";
+    const OLD_CATS  = "almoxarifado-categorias-v1";
+    const LS_ACTIVE = "almoxarifado-active-profile-v1";
+    const LS_DATA_PREFIX = "almoxarifado-data-v1::";
+
+    function loadInitial(){
+      // 1) se já existem as chaves v2, usa elas
+      try{
+        const i = JSON.parse(localStorage.getItem(LS_ITEMS)||"null");
+        const c = JSON.parse(localStorage.getItem(LS_CATS)||"null");
+        if(Array.isArray(i) && Array.isArray(c)) return { items:i, cats:c.length?c:CATEGORIAS_PADRAO };
+      }catch{}
+      // 2) migrar de v1 (sem perfis)
+      try{
+        const i = JSON.parse(localStorage.getItem(OLD_ITEMS)||"null");
+        const c = JSON.parse(localStorage.getItem(OLD_CATS)||"null");
+        if(Array.isArray(i) || Array.isArray(c)){
+          const data={ items:i||[], cats:(c&&c.length?c:CATEGORIAS_PADRAO) };
+          localStorage.setItem(LS_ITEMS, JSON.stringify(data.items));
+          localStorage.setItem(LS_CATS, JSON.stringify(data.cats));
+          return data;
+        }
+      }catch{}
+      // 3) tentar migrar do perfil ativo (não protegido)
+      try{
+        const active = localStorage.getItem(LS_ACTIVE) || "voce";
+        const raw = localStorage.getItem(LS_DATA_PREFIX+active);
+        if(raw){ const obj=JSON.parse(raw); if(obj && !obj.__enc){
+          const data={ items:obj.items||[], cats:obj.cats||CATEGORIAS_PADRAO };
+          localStorage.setItem(LS_ITEMS, JSON.stringify(data.items));
+          localStorage.setItem(LS_CATS, JSON.stringify(data.cats));
+          return data;
+        } }
+      }catch{}
+      // 4) vazio
+      return { items:[], cats:CATEGORIAS_PADRAO };
+    }
+
     function AlmoxarifadoApp(){
-      const [profiles, setProfiles] = useLocalStorage(LS_PROFILES, [ {id:"voce", name:"Você", protected:false}, {id:"namorada", name:"Namorada", protected:false} ]);
-      const [activeId, setActiveId] = useLocalStorage(LS_ACTIVE, profiles[0]?.id || "voce");
-      const active = profiles.find(p=>p.id===activeId) || profiles[0] || {id:"voce", name:"Você", protected:false};
+      const [data, setData] = useState(loadInitial);
 
-      const [data, setData] = useState({ items:[], cats:CATEGORIAS_PADRAO });
-      const [locked, setLocked] = useState(false);
-      const [pendingDecryptPw, setPendingDecryptPw] = useState("");
-
-      // migração
+      // salvar sempre que mudar
       useEffect(()=>{
-        try{
-          const migKey = `almoxarifado-migrated-v1::${active.id}`;
-          if(localStorage.getItem(migKey)) return;
-          const rawOldItems = localStorage.getItem(LS_KEY_OLD);
-          const rawOldCats = localStorage.getItem(LS_CAT_OLD);
-          if(active.id==="voce" && (rawOldItems||rawOldCats)){
-            const items = rawOldItems? JSON.parse(rawOldItems): [];
-            const cats = rawOldCats? JSON.parse(rawOldCats): CATEGORIAS_PADRAO;
-            try{ localStorage.setItem(LS_DATA_PREFIX+active.id, JSON.stringify({ items, cats })); localStorage.setItem(migKey, "1"); }catch{}
-          }
-        }catch{}
-      },[active.id]);
-
-      // carregar perfil
-      useEffect(()=>{
-        try{
-          const raw = localStorage.getItem(LS_DATA_PREFIX+active.id);
-          if(!raw){ setData({ items:[], cats:CATEGORIAS_PADRAO }); setLocked(false); return; }
-          const obj = JSON.parse(raw);
-          if(obj && obj.__enc){ setLocked(true); setData({ items:[], cats:[] }); }
-          else { setData({ items: obj.items||[], cats: obj.cats||CATEGORIAS_PADRAO }); setLocked(false); }
-        }catch{ setData({ items:[], cats:CATEGORIAS_PADRAO }); setLocked(false); }
-      },[active.id]);
-
-      // salvar dados
-      useEffect(()=>{ (async()=>{
-        try{
-          if(locked) return;
-          const key = LS_DATA_PREFIX+active.id;
-          if(active.protected){
-            if(!pendingDecryptPw) return;
-            const enc = await encryptJSON(data, pendingDecryptPw);
-            localStorage.setItem(key, JSON.stringify(enc));
-          } else {
-            localStorage.setItem(key, JSON.stringify(data));
-          }
-        }catch{}
-      })(); },[data, active.id, active.protected, locked, pendingDecryptPw]);
-
-      function nextDays(deltaDays){ const d=new Date(); d.setDate(d.getDate()+deltaDays); const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,"0"); const day=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; }
+        try{ localStorage.setItem(LS_ITEMS, JSON.stringify(data.items)); }catch{}
+        try{ localStorage.setItem(LS_CATS, JSON.stringify(data.cats)); }catch{}
+      },[data]);
 
       // exemplos iniciais (se vazio)
       useEffect(()=>{
         if((data.items||[]).length===0){
+          const nextDays=(delta)=>{ const d=new Date(); d.setDate(d.getDate()+delta); return d.toISOString().slice(0,10); };
           const ex = [
             { id: uid(), nome: "Dipirona 500mg", categoria: "Remédios", quantidade: 8, unidade: "cp", min: 6, validade: nextDays(45), local: "Armário do banheiro", notas: "Analgésico", createdAt: Date.now()-1000000, updatedAt: Date.now()-1000000 },
             { id: uid(), nome: "Paracetamol 750mg", categoria: "Remédios", quantidade: 2, unidade: "cp", min: 6, validade: nextDays(-5), local: "Armário do banheiro", notas: "Ver lote", createdAt: Date.now()-1000000, updatedAt: Date.now()-1000000 },
@@ -370,13 +292,11 @@
         try { if (typeof window !== 'undefined' && !window.__almox_tests) { runSelfTests(); window.__almox_tests = true; } } catch {}
       }, []);
 
-      // CRUD
+      // CRUD itens
       const [showForm, setShowForm] = useState(false);
       const [editing, setEditing] = useState(null);
       const [showCompras, setShowCompras] = useState(false);
       const [showCats, setShowCats] = useState(false);
-      const [showProfiles, setShowProfiles] = useState(false);
-      const [unlockOpen, setUnlockOpen] = useState(false);
 
       function addItem(){ setEditing(null); setShowForm(true); }
       function saveItem(it){ setData(d=>{ const exists=d.items.some(p=>p.id===it.id); const items= exists? d.items.map(p=> p.id===it.id? {...it, updatedAt:Date.now()}: p): [{...it, createdAt:Date.now(), updatedAt:Date.now()}, ...d.items]; return {...d, items}; }); setShowForm(false); }
@@ -387,6 +307,7 @@
 
       function setCats(fnOrArr){ setData(d=> ({...d, cats: typeof fnOrArr==='function'? fnOrArr(d.cats): fnOrArr })); }
 
+      // busca/ordenação/filtros
       const [query, setQuery] = useState("");
       const [categoria, setCategoria] = useState("Todas");
       const [sortBy, setSortBy] = useState("updated");
@@ -398,70 +319,37 @@
 
       const comprasCount = useMemo(()=> data.items.filter(it=> lowStock(it) || validadeStatus(it).tone==="danger").length, [data.items]);
 
-      function onPrint(){ try{ const w=window.open('', 'print', 'width=900,height=700'); if(!w){ if(typeof window.print==='function') window.print(); return; } const escape=(s)=> String(s??'').replace(/[&<>"']/g,(m)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m])); const base=filtered.length? filtered: data.items; const rows=base.map(it=> `<tr><td>${escape(it.nome)}</td><td>${escape(it.categoria)}</td><td>${it.quantidade??0}</td><td>${escape(it.unidade||'un')}</td><td>${isFinite(it.min)?it.min:0}</td><td>${escape(it.validade||'')}</td><td>${escape(it.local||'')}</td><td>${escape(it.notas||'')}</td></tr>`).join(''); w.document.write(`<!doctype html><html><head><meta charset=\"utf-8\"/><title>Inventário</title><style>body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:24px;}h1{font-size:18px;margin:0 0 12px;}table{width:100%;border-collapse:collapse;}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;vertical-align:top;}th{background:#f1f5f9;text-transform:uppercase;letter-spacing:.03em;font-weight:600;}</style></head><body><h1>Inventário (${base.length} itens)</h1><table><thead><tr><th>Item</th><th>Categoria</th><th>Qtd</th><th>Unid</th><th>Mín</th><th>Validade</th><th>Local</th><th>Notas</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=function(){window.print(); setTimeout(()=>window.close(), 100);}<\/script></body></html>`); w.document.close(); }catch(e){ try{ window.print(); }catch{} } }
-
-      function getCounts(profileId){ try{ const raw=localStorage.getItem(LS_DATA_PREFIX+profileId); if(!raw) return "0 itens"; const obj=JSON.parse(raw); if(obj && obj.__enc) return "dados protegidos"; const n=(obj.items||[]).length; return `${n} item(ns)`; }catch{ return "0 itens"; } }
-      async function encryptAll(profileId, pw){ try{ const raw=localStorage.getItem(LS_DATA_PREFIX+profileId); const obj = raw? JSON.parse(raw): { items:[], cats:CATEGORIAS_PADRAO }; const enc = await encryptJSON(obj, pw); localStorage.setItem(LS_DATA_PREFIX+profileId, JSON.stringify(enc)); if(profileId===active.id){ setPendingDecryptPw(pw); setLocked(false); } }catch(e){ console.error(e); throw e; } }
-      async function decryptAll(profileId, pw, persistPlain=false){ const raw=localStorage.getItem(LS_DATA_PREFIX+profileId); if(!raw) { if(persistPlain) localStorage.setItem(LS_DATA_PREFIX+profileId, JSON.stringify({ items:[], cats:CATEGORIAS_PADRAO })); return; } const obj=JSON.parse(raw); if(!obj.__enc) { if(persistPlain) localStorage.setItem(LS_DATA_PREFIX+profileId, JSON.stringify(obj)); return; } const dec= await decryptJSON(obj, pw); if(persistPlain) localStorage.setItem(LS_DATA_PREFIX+profileId, JSON.stringify(dec)); if(profileId===active.id){ setData({ items:dec.items||[], cats:dec.cats||CATEGORIAS_PADRAO }); setPendingDecryptPw(""); setLocked(false); } }
-
-      function HeaderWrapper(){
-        return (
-          <Header onAdd={()=>setShowForm(true)} onPrint={onPrint} onShowCompras={()=>setShowCompras(true)} comprasCount={comprasCount} profiles={profiles} activeId={activeId} setActiveId={setActiveId} onManageProfiles={()=>setShowProfiles(true)} />
-        );
-      }
-
       return (
         <div className="min-h-screen bg-slate-100">
-          <HeaderWrapper />
+          <Header onAdd={addItem} onShowCompras={()=>setShowCompras(true)} comprasCount={comprasCount} />
 
           <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-            {locked && <div className="p-4 rounded-2xl border border-amber-300 bg-amber-50 text-amber-800">Perfil protegido. <button className="underline" onClick={()=>setUnlockOpen(true)}>Desbloquear agora</button>.</div>}
-
             <Section title="Resumo"><Stats items={data.items} /></Section>
 
-            <Section title={<span className="inline-flex items-center gap-2"><Icon.Search className="w-5 h-5"/> Inventário</span>} right={<div className="flex items-center gap-3"><div className="relative w-72"><Icon.Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"/><input value={"" /* controlled below via state binding in this closure */} onChange={()=>{}} placeholder="" className="hidden"/></div><span className="text-xs text-slate-500"></span></div>}>
-              <InventorySection data={data} setData={setData} locked={locked} setShowForm={setShowForm} setEditing={setEditing} showCats={showCats} setShowCats={setShowCats} queryState={[query, setQuery]} categoriaState={[categoria, setCategoria]} sortState={[sortBy, setSortBy]} displayCats={displayCats} onInc={inc} onDec={dec} onEdit={editItem} onDelete={deleteItem} filtered={filtered} />
+            <Section title={<span className="inline-flex items-center gap-2"><Icon.Search className="w-5 h-5"/> Inventário</span>} right={<div className="flex items-center gap-3"><div className="relative w-72"><Icon.Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"/><input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Buscar por nome, local ou notas..." className="w-full pl-10 pr-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-900 placeholder-slate-400"/></div><span className="text-xs text-slate-500">{filtered.length} itens</span></div>}>
+              <div className="space-y-4">
+                <Toolbar categoria={categoria} setCategoria={setCategoria} sortBy={sortBy} setSortBy={setSortBy} categorias={displayCats} onManageCats={()=>setShowCats(true)} />
+                <Table items={filtered} onInc={inc} onDec={dec} onEdit={editItem} onDelete={deleteItem} />
+              </div>
             </Section>
           </main>
 
+          {/* Modais */}
           <Modal open={showForm} onClose={()=>setShowForm(false)} title={editing?"Editar item":"Novo item"}>
-            <ItemForm initial={editing} onSubmit={(it)=>{ const exists=data.items.some(p=>p.id===it.id); const items= exists? data.items.map(p=> p.id===it.id? {...it, updatedAt:Date.now()}: p): [{...it, createdAt:Date.now(), updatedAt:Date.now()}, ...data.items]; setData(d=> ({...d, items})); setShowForm(false); }} onCancel={()=>setShowForm(false)} categorias={displayCats} onCreateCategoria={(nome)=> setData(d=> ({...d, cats: d.cats.includes(nome)? d.cats: [...d.cats, nome]}))} />
+            <ItemForm initial={editing} onSubmit={saveItem} onCancel={()=>setShowForm(false)} categorias={displayCats} onCreateCategoria={(nome)=> setCats(prev=> prev.includes(nome)? prev : [...prev, nome])} />
           </Modal>
 
-          <ManageCategoriesModal open={showCats} onClose={()=>setShowCats(false)} categorias={data.cats} setCategorias={(cats)=> setData(d=> ({...d, cats}))} items={data.items} setItems={(items)=> setData(d=> ({...d, items}))} />
+          <ManageCategoriesModal open={showCats} onClose={()=>setShowCats(false)} categorias={data.cats} setCategorias={(cats)=> setCats(cats)} items={data.items} setItems={(items)=> setData(d=> ({...d, items}))} />
 
-          <ManageProfilesModal open={showProfiles} onClose={()=>setShowProfiles(false)} profiles={profiles} setProfiles={setProfiles} activeId={activeId} setActiveId={setActiveId} getCounts={getCounts} encSupport={!!hasSubtle} encryptAll={encryptAll} decryptAll={decryptAll} />
+          <Modal open={showCompras} onClose={()=>setShowCompras(false)} title="Lista de compras"><ComprasView items={data.items} /></Modal>
 
-          <Modal open={showCompras} onClose={()=>setShowCompras(false)} title="Lista de compras"><ComprasView items={data.items} onPrint={onPrint} /></Modal>
-
-          <UnlockModal open={unlockOpen} onClose={()=>setUnlockOpen(false)} onUnlock={(pw)=>{ (async()=>{ try{ const raw=localStorage.getItem(LS_DATA_PREFIX+active.id); if(!raw){ setLocked(false); setUnlockOpen(false); setPendingDecryptPw(pw); return; } const obj=JSON.parse(raw); const dec = await decryptJSON(obj, pw); if(!dec || !dec.items){ throw new Error('bad'); } setData({ items:dec.items||[], cats:dec.cats||CATEGORIAS_PADRAO }); setPendingDecryptPw(pw); setLocked(false); setUnlockOpen(false); }catch{ alert('Senha incorreta.'); } })(); }} profileName={active.name} />
-
-          <footer className="max-w-7xl mx-auto px-4 pb-10 pt-2 text-center text-xs text-slate-500">Feito com ♥ para organizar seu estoque por perfil. Dica: use o campo "mín" para gerar automaticamente a lista de compras quando faltar algo.</footer>
+          <footer className="max-w-7xl mx-auto px-4 pb-10 pt-2 text-center text-xs text-slate-500">Feito com ♥ para organizar seu estoque. Dica: use o campo "mín" para gerar automaticamente a lista de compras quando faltar algo.</footer>
 
           <style>{`
             @media print { header, footer, .no-print { display: none !important; } main { padding: 0 !important; } body { background: white !important; } }
           `}</style>
         </div>
       );
-
-      function InventorySection({ data, setData, locked, setShowForm, setEditing, showCats, setShowCats, queryState, categoriaState, sortState, displayCats, onInc, onDec, onEdit, onDelete, filtered }){
-        const [query, setQuery] = queryState;
-        const [categoria, setCategoria] = categoriaState;
-        const [sortBy, setSortBy] = sortState;
-        return (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="relative w-72">
-                <Icon.Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"/>
-                <input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Buscar por nome, local ou notas..." className="w-full pl-10 pr-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-900 placeholder-slate-400"/>
-              </div>
-              <span className="text-xs text-slate-500">{filtered.length} itens</span>
-            </div>
-            <Toolbar categoria={categoria} setCategoria={setCategoria} sortBy={sortBy} setSortBy={setSortBy} categorias={displayCats} onManageCats={()=>setShowCats(true)} />
-            <Table items={filtered} onInc={onInc} onDec={onDec} onEdit={(it)=>{ if(locked) return; onEdit(it); }} onDelete={(it)=>{ if(locked) return; onDelete(it); }} />
-          </div>
-        );
-      }
     }
 
     // =============================
@@ -469,9 +357,10 @@
     // =============================
     function runSelfTests(){
       console.groupCollapsed("Almoxarifado – auto-testes");
+      const today=(()=>{ const d=new Date(); const tz=d.getTimezoneOffset(); const local=new Date(d.getTime()-tz*60000); return local.toISOString().slice(0,10); })();
       console.assert(parseDate("2025-10-01") instanceof Date, "parseDate deve retornar Date válido");
       console.assert(parseDate("")===null, "parseDate vazio deve retornar null");
-      console.assert(daysUntil(todayISO())>=-1, "daysUntil não deve falhar na data de hoje");
+      console.assert(daysUntil(today)>=-1, "daysUntil não deve falhar na data de hoje");
       const itm1={ validade:"", quantidade:1, min:0 }; console.assert(validadeStatus(itm1).tone==="muted", "Sem validade => muted");
       const tomorrow=(()=>{ const d=new Date(); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); })(); const itm2={ validade:tomorrow, quantidade:1, min:0 }; console.assert(["ok","warning"].includes(validadeStatus(itm2).tone), "Validade futura => ok/warning");
       const past=(()=>{ const d=new Date(); d.setDate(d.getDate()-2); return d.toISOString().slice(0,10); })(); const itm3={ validade:past, quantidade:1, min:0 }; console.assert(validadeStatus(itm3).tone==="danger", "Validade passada => danger");
