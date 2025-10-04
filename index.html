@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Almoxarifado Pessoal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100">
+  <div id="root"></div>
+
+  <!-- React + ReactDOM UMD -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Babel para compilar JSX no navegador (bom para testar rapidamente) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useState } = React;
+
+    // =============================
+    // Utilidades
+    // =============================
+    function uid() { return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
+    function classNames(...xs) { return xs.filter(Boolean).join(" "); }
+    function todayISO() { const d=new Date(); const tz=d.getTimezoneOffset(); const local=new Date(d.getTime()-tz*60000); return local.toISOString().slice(0,10); }
+    function parseDate(d){ if(!d) return null; const [y,m,day]=d.split("-").map(n=>parseInt(n,10)); if(!y||!m||!day) return null; return new Date(y,m-1,day); }
+    function daysUntil(dateISO){ const d=parseDate(dateISO); if(!d) return null; const now=new Date(); const ms=d.setHours(23,59,59,999)-now.getTime(); return Math.ceil(ms/86400000); }
+    function validadeStatus(it){ if(!it.validade) return {label:"—", tone:"muted"}; const dias=daysUntil(it.validade); if(dias==null) return {label:it.validade, tone:"muted"}; if(dias<0) return {label:`Vencido há ${Math.abs(dias)}d`, tone:"danger"}; if(dias===0) return {label:"Vence hoje", tone:"warning"}; if(dias<=30) return {label:`Vence em ${dias}d`, tone:"warning"}; return {label:it.validade, tone:"ok"}; }
+    function lowStock(it){ return it.quantidade < (isFinite(it.min)? it.min : 0); }
+
+    const CATEGORIAS_PADRAO = ["Remédios","Cuidados Pessoais","Papelaria","Diversos"];
+
+    // ===== Helpers de criptografia (AES-GCM + PBKDF2) =====
+    const hasSubtle = typeof window !== 'undefined' && window.crypto && window.crypto.subtle;
+    function b64enc(bytes){ const arr=bytes instanceof Uint8Array? bytes : new Uint8Array(bytes); let s=""; for(let i=0;i<arr.length;i++) s+=String.fromCharCode(arr[i]); return btoa(s); }
+    function b64dec(str){ const bin=atob(str); const arr=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i); return arr.buffer; }
+    function randBytes(n){ const a=new Uint8Array(n); window.crypto.getRandomValues(a); return a; }
+    async function deriveKey(password, saltBytes){ const enc=new TextEncoder(); const keyMaterial=await window.crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]); return window.crypto.subtle.deriveKey({name:"PBKDF2", salt:saltBytes, iterations:150000, hash:"SHA-256"}, keyMaterial, {name:"AES-GCM", length:256}, false, ["encrypt","decrypt"]); }
+    async function encryptJSON(obj, password){ if(!hasSubtle) throw new Error("Criptografia não suportada"); const enc=new TextEncoder(); const salt=randBytes(16); const iv=randBytes(12); const key=await deriveKey(password, salt); const data=enc.encode(JSON.stringify(obj)); const ct=await window.crypto.subtle.encrypt({name:"AES-GCM", iv}, key, data); return { __enc:1, salt:b64enc(salt), iv:b64enc(iv), data:b64enc(ct) }; }
+    async function decryptJSON(record, password){ if(!record||!record.__enc) return record; const dec=new TextDecoder(); const salt=new Uint8Array(b64dec(record.salt)); const iv=new Uint8Array(b64dec(record.iv)); const key=await deriveKey(password, salt); const ct=b64dec(record.data); const plain=await window.crypto.subtle.decrypt({name:"AES-GCM", iv}, key, ct); return JSON.parse(dec.decode(plain)); }
+
+    // ===== UI primitives =====
+    const Pill = ({ children, tone = "muted" }) => (
+      <span className={classNames("inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+        tone==="danger"&&"bg-red-100 text-red-800",
+        tone==="warning"&&"bg-amber-100 text-amber-800",
+        tone==="ok"&&"bg-emerald-100 text-emerald-800",
+        tone==="muted"&&"bg-slate-100 text-slate-700")}>{children}</span>
+    );
+
+    const Section = ({ title, children, right }) => (
+      <section className="bg-white rounded-2xl shadow p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+          {right}
+        </div>
+        {children}
+      </section>
+    );
+
+    const Icon = {
+      Plus:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M12 5v14M5 12h14"/></svg>),
+      Printer:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M6 9V4h12v5M6 18h12v2H6z"/><rect x="4" y="9" width="16" height="8" rx="2" strokeWidth="2"/></svg>),
+      Trash:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>),
+      Edit:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M4 20l4-1 9-9a2.5 2.5 0 10-3.5-3.5L4.5 15.5 4 20z"/></svg>),
+      Search:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4" {...p}><circle cx="11" cy="11" r="7" strokeWidth="2"/><path strokeWidth="2" strokeLinecap="round" d="M20 20l-3-3"/></svg>),
+      Filter:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M4 6h16M7 12h10M10 18h4"/></svg>),
+      Cart:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-5 h-5" {...p}><path strokeWidth="2" strokeLinecap="round" d="M3 4h2l2 12h10l2-8H7"/><circle cx="10" cy="20" r="1"/><circle cx="17" cy="20" r="1"/></svg>),
+      Minus:(p)=>(<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4" {...p}><path strokeWidth="2" strokeLinecap="round" d="M5 12h14"/></svg>)
+    };
+
+    // ===== storage simples =====
+    function useLocalStorage(key, initial){
+      const [state, setState] = useState(()=>{ try{ const raw=localStorage.getItem(key); return raw? JSON.parse(raw): initial; }catch{ return initial; } });
+      useEffect(()=>{ try{ document.documentElement.classList.remove('dark'); localStorage.removeItem('almoxarifado-dark'); }catch{} try{ localStorage.setItem(key, JSON.stringify(state)); }catch{} },[key,state]);
+      return [state, setState];
+    }
+
+    // ===== Perfis =====
+    const LS_PROFILES = "almoxarifado-profiles-v1";
+    const LS_ACTIVE = "almoxarifado-active-profile-v1";
+    const LS_DATA_PREFIX = "almoxarifado-data-v1::"; // + profileId
+    const LS_KEY_OLD = "almoxarifado-items-v1";
+    const LS_CAT_OLD = "almoxarifado-categorias-v1";
+
+    function defaultProfiles(){ return [ {id:"voce", name:"Você", protected:false}, {id:"namorada", name:"Namorada", protected:false} ]; }
+
+    function Header({ onAdd, onPrint, comprasCount, onShowCompras, profiles, activeId, setActiveId, onManageProfiles }){
+      return (
+        <header className="sticky top-0 z-20 backdrop-blur bg-white/70 border-b border-slate-200">
+          <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap gap-2 items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-2xl bg-indigo-600 text-white grid place-items-center font-bold shadow">AP</div>
+              <div>
+                <h1 className="text-xl font-bold text-slate-900">Almoxarifado Pessoal</h1>
+                <p className="text-xs text-slate-500">Inventário por perfil, com senha opcional</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <select value={activeId} onChange={(e)=>setActiveId(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-900">
+                {profiles.map(p=> <option key={p.id} value={p.id}>{p.name}{p.protected?" (🔒)":""}</option>)}
+              </select>
+              <button onClick={onManageProfiles} className="px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50">Gerenciar perfis</button>
+              <button onClick={onShowCompras} className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center gap-2"><Icon.Cart/> Lista de compras {comprasCount>0 && <span className="ml-1 text-emerald-200">({comprasCount})</span>}</button>
+              <button onClick={onAdd} className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white inline-flex items-center gap-2"><Icon.Plus/> Novo item</button>
+              <button onClick={onPrint} className="px-3 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 inline-flex items-center gap-2"><Icon.Printer/> Imprimir</button>
+            </div>
+          </div>
+        </header>
+      );
+    }
+
+    function Toolbar({ categoria, setCategoria, sortBy, setSortBy, categorias, onManageCats }){
+      return (
+        <div className="flex flex-col md:flex-row gap-3 items-center justify-between">
+          <div className="flex gap-2 items-center flex-wrap">
+            <div className="flex gap-1 bg-slate-100 p-1 rounded-xl">
+              {["Todas", ...categorias].map((c) => (
+                <button key={c} onClick={()=>setCategoria(c)} className={classNames("px-3 py-1.5 text-sm rounded-lg", categoria===c?"bg-white shadow text-slate-900":"text-slate-600 hover:text-slate-900")}>{c}</button>
+              ))}
+            </div>
+            <button onClick={onManageCats} className="px-3 py-2 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50">Gerenciar categorias</button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Icon.Filter className="text-slate-400"/>
+            <select value={sortBy} onChange={(e)=>setSortBy(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-900">
+              <option value="updated">Ordenar: Atualização recente</option>
+              <option value="nome">Ordenar: Nome (A→Z)</option>
+              <option value="quantidade">Ordenar: Quantidade (↓)</option>
+              <option value="validade">Ordenar: Validade (mais cedo)</option>
+              <option value="categoria">Ordenar: Categoria</option>
+            </select>
+          </div>
+        </div>
+      );
+    }
+
+    function Stats({ items }){
+      const total=items.length; const baixos=items.filter(lowStock).length; const vencendo=items.filter(it=>{ const s=validadeStatus(it); return s.tone==="warning"||s.tone==="danger"; }).length; const byCat=new Map(); for(const it of items){ byCat.set(it.categoria,(byCat.get(it.categoria)||0)+1); }
+      return (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-indigo-50 rounded-2xl p-4"><div className="text-sm text-indigo-700">Total de itens</div><div className="text-2xl font-bold text-indigo-900">{total}</div></div>
+          <div className="bg-emerald-50 rounded-2xl p-4"><div className="text-sm text-emerald-700">Categorias</div><div className="text-2xl font-bold text-emerald-900">{Array.from(byCat.keys()).length} <span className="text-sm font-normal">ativas</span></div></div>
+          <div className="bg-amber-50 rounded-2xl p-4"><div className="text-sm text-amber-700">Vencendo/Expirados</div><div className="text-2xl font-bold text-amber-900">{vencendo}</div></div>
+          <div className="bg-rose-50 rounded-2xl p-4"><div className="text-sm text-rose-700">Baixo estoque</div><div className="text-2xl font-bold text-rose-900">{baixos}</div></div>
+        </div>
+      );
+    }
+
+    function Table({ items, onInc, onDec, onEdit, onDelete }){
+      return (
+        <div className="overflow-x-auto">
+          <table className="min-w-full border-separate border-spacing-y-2">
+            <thead>
+              <tr className="text-left text-xs uppercase text-slate-500">
+                <th className="px-3">Item</th><th className="px-3">Qtd</th><th className="px-3">Mín</th><th className="px-3">Validade</th><th className="px-3">Local</th><th className="px-3">Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it)=>{ const v=validadeStatus(it); const isLow=lowStock(it); return (
+                <tr key={it.id} className="bg-white shadow rounded-xl">
+                  <td className="px-3 py-3 align-top"><div className="font-medium text-slate-900">{it.nome}</div><div className="flex flex-wrap gap-1 mt-1 items-center"><Pill tone="muted">{it.categoria}</Pill>{it.notas && <span className="text-xs text-slate-500">• {it.notas}</span>}</div></td>
+                  <td className="px-3 py-3 align-top"><div className={classNames("inline-flex items-center gap-2 px-2 py-1 rounded-xl border", isLow?"border-rose-300 bg-rose-50 text-rose-700":"border-slate-300")}>
+                    <button type="button" onClick={()=>onDec(it)} className="p-1 rounded hover:bg-slate-100"><Icon.Minus/></button>
+                    <span className="tabular-nums font-semibold">{it.quantidade} {it.unidade||"un"}</span>
+                    <button type="button" onClick={()=>onInc(it)} className="p-1 rounded hover:bg-slate-100"><Icon.Plus/></button>
+                  </div></td>
+                  <td className="px-3 py-3 align-top"><span className="tabular-nums text-slate-700">{isFinite(it.min)?it.min:0}</span></td>
+                  <td className="px-3 py-3 align-top"><Pill tone={v.tone}>{v.label}</Pill></td>
+                  <td className="px-3 py-3 align-top"><span className="text-slate-700">{it.local||"—"}</span></td>
+                  <td className="px-3 py-3 align-top"><div className="flex gap-2"><button type="button" onClick={()=>onEdit(it)} className="px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50 inline-flex items-center gap-1"><Icon.Edit/> Editar</button><button type="button" onClick={()=>onDelete(it)} className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white inline-flex items-center gap-1"><Icon.Trash/> Remover</button></div></td>
+                </tr> ); })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function Modal({ open, onClose, title, children, footer }){ if(!open) return null; return (
+      <div className="fixed inset-0 z-30">
+        <div className="absolute inset-0 bg-slate-900/50" onClick={onClose} />
+        <div className="absolute inset-0 flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl bg-white rounded-2xl shadow-xl border border-slate-200">
+            <div className="p-4 border-b border-slate-200 flex items-center justify-between"><h3 className="text-lg font-semibold text-slate-900">{title}</h3><button onClick={onClose} className="px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">Fechar</button></div>
+            <div className="p-4 max-h-[70vh] overflow-auto">{children}</div>
+            {footer && <div className="p-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl">{footer}</div>}
+          </div>
+        </div>
+      </div> ); }
+
+    function ManageCategoriesModal({ open, onClose, categorias, setCategorias, items, setItems }){
+      const [novo, setNovo] = useState("");
+      const counts = useMemo(()=>{ const m=new Map(); for(const c of categorias) m.set(c,0); for(const it of items) m.set(it.categoria,(m.get(it.categoria)||0)+1); return m; },[categorias,items]);
+      function addCategoria(){ const name=(novo||"").trim(); if(!name) return; setCategorias(prev=> prev.includes(name)? prev : [...prev, name]); setNovo(""); }
+      function renomear(oldName){ const novoNome=prompt(`Renomear "${oldName}" para:`, oldName); if(!novoNome||novoNome.trim()===oldName) return; const newN=novoNome.trim(); setCategorias(prev=> Array.from(new Set(prev.map(c=> c===oldName? newN: c)))); setItems(prev=> prev.map(it=> it.categoria===oldName? {...it, categoria:newN, updatedAt:Date.now()}: it)); alert("Categoria renomeada."); }
+      function remover(name){ const usados=counts.get(name)||0; if(usados>0){ if(!confirm(`A categoria "${name}" possui ${usados} item(ns). Remover e mover para "Diversos"?`)) return; setItems(prev=> prev.map(it=> it.categoria===name? {...it, categoria:"Diversos", updatedAt:Date.now()}: it)); } setCategorias(prev=> prev.filter(c=> c!==name)); }
+      if(!open) return null; return (
+        <Modal open={open} onClose={onClose} title="Gerenciar categorias">
+          <div className="space-y-3">
+            <div className="flex gap-2"><input value={novo} onChange={(e)=>setNovo(e.target.value)} placeholder="Nova categoria" className="flex-1 px-3 py-2 rounded-xl border border-slate-300 bg-white"/><button onClick={addCategoria} className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white">Adicionar</button></div>
+            <ul className="divide-y divide-slate-200">{categorias.map(c=> (
+              <li key={c} className="py-2 flex items-center justify-between"><div className="flex items-center gap-2"><Pill tone="muted">{c}</Pill><span className="text-xs text-slate-500">{counts.get(c)||0} itens</span></div><div className="flex gap-2"><button onClick={()=>renomear(c)} className="px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50 inline-flex items-center gap-1"><Icon.Edit/> Renomear</button><button onClick={()=>remover(c)} className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white inline-flex items-center gap-1"><Icon.Trash/> Remover</button></div></li>
+            ))}</ul>
+            <p className="text-xs text-slate-500">Ao remover uma categoria com itens, eles serão movidos para "Diversos".</p>
+          </div>
+        </Modal> ); }
+
+    function ManageProfilesModal({ open, onClose, profiles, setProfiles, activeId, setActiveId, getCounts, encSupport, encryptAll, decryptAll }){
+      const [novo, setNovo] = useState("");
+      if(!open) return null;
+      function addPerfil(){ const name=(novo||"").trim(); if(!name) return; const slug = name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || uid(); const idBase=slug || uid(); let id=idBase; let i=1; while(profiles.some(p=>p.id===id)) { id=`${idBase}-${i++}`; } const p={id, name, protected:false}; setProfiles(prev=> [...prev, p]); setNovo(""); setActiveId(id); }
+      function renamePerfil(p){ const name=prompt(`Renomear perfil "${p.name}" para:`, p.name); if(!name||!name.trim()) return; setProfiles(prev=> prev.map(x=> x.id===p.id? {...x, name:name.trim()}: x)); }
+      function removePerfil(p){ if(!confirm(`Remover perfil "${p.name}" e todos os dados?`)) return; try{ localStorage.removeItem(LS_DATA_PREFIX+p.id); }catch{} setProfiles(prev=> prev.filter(x=> x.id!==p.id)); if(activeId===p.id){ const next=(profiles.find(x=> x.id!==p.id) || {id:"", name:"", protected:false}).id; setActiveId(next || "voce"); }
+      }
+      async function setSenha(p){ if(!encSupport){ alert('Seu navegador não suporta criptografia Web Crypto.'); return; } if(p.protected){ const atual = prompt('Senha atual do perfil:'); if(!atual) return; try{ await decryptAll(p.id, atual); }catch{ alert('Senha atual incorreta.'); return; } const nova = prompt('Nova senha:'); if(!nova) return; await encryptAll(p.id, nova); setProfiles(prev=> prev.map(x=> x.id===p.id? {...x, protected:true}: x)); alert('Senha alterada.'); } else { const senha = prompt('Defina uma senha para este perfil:'); if(!senha) return; await encryptAll(p.id, senha); setProfiles(prev=> prev.map(x=> x.id===p.id? {...x, protected:true}: x)); alert('Perfil protegido por senha.'); } }
+      async function removerSenha(p){ if(!encSupport){ alert('Navegador sem Web Crypto.'); return; } if(!p.protected) return; const senha=prompt('Informe a senha atual para remover a proteção:'); if(!senha) return; try{ await decryptAll(p.id, senha, true); setProfiles(prev=> prev.map(x=> x.id===p.id? {...x, protected:false}: x)); alert('Proteção removida.'); }catch{ alert('Senha incorreta.'); }
+      }
+      return (
+        <Modal open={open} onClose={onClose} title="Gerenciar perfis">
+          <div className="space-y-3">
+            <div className="flex gap-2"><input value={novo} onChange={(e)=>setNovo(e.target.value)} placeholder="Novo perfil" className="flex-1 px-3 py-2 rounded-xl border border-slate-300 bg-white"/><button onClick={addPerfil} className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white">Adicionar</button></div>
+            <ul className="divide-y divide-slate-200">
+              {profiles.map((p)=> (
+                <li key={p.id} className="py-2 flex items-center justify-between">
+                  <div className="flex flex-col">
+                    <div className="flex items-center gap-2"><strong className="text-slate-900">{p.name}</strong>{p.protected && <Pill tone="muted">🔒 protegido</Pill>}{activeId===p.id && <Pill tone="ok">ativo</Pill>}</div>
+                    <span className="text-xs text-slate-500">{getCounts(p.id)}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={()=>renamePerfil(p)} className="px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50 inline-flex items-center gap-1"><Icon.Edit/> Renomear</button>
+                    {!p.protected && <button onClick={()=>setSenha(p)} className="px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50">Definir senha</button>}
+                    {p.protected && <button onClick={()=>setSenha(p)} className="px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50">Alterar senha</button>}
+                    {p.protected && <button onClick={()=>removerSenha(p)} className="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white">Remover proteção</button>}
+                    <button onClick={()=>removePerfil(p)} className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white inline-flex items-center gap-1"><Icon.Trash/> Remover</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {!encSupport && <p className="text-xs text-amber-700 bg-amber-50 p-2 rounded-lg">Seu navegador não suporta Web Crypto; a opção de senha ficará indisponível.</p>}
+          </div>
+        </Modal>
+      );
+    }
+
+    function UnlockModal({ open, onClose, onUnlock, profileName }){ const [pw,setPw]=useState(""); if(!open) return null; return (
+      <Modal open={open} onClose={onClose} title={`Desbloquear perfil \"${profileName}\"`}>
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600">Este perfil está protegido por senha. Digite a senha para carregar os dados.</p>
+          <input type="password" autoFocus value={pw} onChange={(e)=>setPw(e.target.value)} placeholder="Senha" className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white"/>
+          <div className="flex justify-end gap-2"><button onClick={onClose} className="px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50">Cancelar</button><button onClick={()=>onUnlock(pw)} className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white">Desbloquear</button></div>
+        </div>
+      </Modal>
+    ); }
+
+    function ItemForm({ initial, onSubmit, onCancel, categorias, onCreateCategoria }){
+      const [form, setForm] = useState(()=> initial || ({ id:uid(), nome:"", categoria:"Remédios", quantidade:1, unidade:"un", min:0, validade:"", local:"", notas:"", createdAt:Date.now(), updatedAt:Date.now() }));
+      useEffect(()=>{ if(initial) setForm(initial); },[initial]);
+      function setField(k,v){ setForm(f=>({...f, [k]:v, updatedAt:Date.now()})); }
+      function handleSubmit(e){ e.preventDefault(); if(!form.nome.trim()) return alert("Informe o nome do item."); if(!form.categoria) return alert("Selecione a categoria."); onSubmit({...form, validade: form.validade||""}); }
+      return (
+        <form onSubmit={handleSubmit} className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="md:col-span-2"><label className="text-sm text-slate-600">Nome</label><input value={form.nome} onChange={(e)=>setField("nome", e.target.value)} className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-300 bg-white" placeholder="Ex.: Dipirona 500mg, Desodorante Nivea, Caneta esferográfica"/></div>
+          <div><label className="text-sm text-slate-600">Categoria</label>
+            <select value={form.categoria} onChange={(e)=>{ const v=e.target.value; if(v==="__new__"){ const nome=prompt("Nome da nova categoria:"); if(nome&&nome.trim()){ const novo=nome.trim(); onCreateCategoria?.(novo); setField("categoria", novo);} } else { setField("categoria", v); } }} className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-300 bg-white">
+              <option value="__new__">+ Criar nova categoria…</option>
+              {categorias.map(c=>(<option key={c} value={c}>{c}</option>))}
+            </select>
+          </div>
+          <div><label className="text-sm text-slate-600">Quantidade</label><input type="number" inputMode="numeric" value={form.quantidade} onChange={(e)=>setField("quantidade", Number(e.target.value))} className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-300 bg-white"/></div>
+          <div><label className="text-sm text-slate-600">Unidade</label><input value={form.unidade} onChange={(e)=>setField("unidade", e.target.value)} className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-300 bg-white" placeholder="un, ml, g, L..."/></div>
+          <div><label className="text-sm text-slate-600">Estoque mínimo</label><input type="number" inputMode="numeric" value={form.min} onChange={(e)=>setField("min", Number(e.target.value))} className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-300 bg-white"/></div>
+          <div><label className="text-sm text-slate-600">Validade (se houver)</label><input type="date" value={form.validade||""} onChange={(e)=>setField("validade", e.target.value)} className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-300 bg-white"/></div>
+          <div><label className="text-sm text-slate-600">Local (ex.: armário, gaveta)</label><input value={form.local} onChange={(e)=>setField("local", e.target.value)} className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-300 bg-white"/></div>
+          <div className="md:col-span-2"><label className="text-sm text-slate-600">Notas</label><textarea value={form.notas} onChange={(e)=>setField("notas", e.target.value)} rows={3} className="w-full mt-1 px-3 py-2 rounded-xl border border-slate-300 bg-white" placeholder="Observações, fabricante, lote, restrições, etc."/></div>
+          <div className="md:col-span-2 flex items-center justify-end gap-2"><button type="button" onClick={onCancel} className="px-4 py-2 rounded-xl border border-slate-300 hover:bg-slate-50">Cancelar</button><button type="submit" className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white">Salvar</button></div>
+        </form>
+      );
+    }
+
+    function ComprasView({ items, onPrint }){
+      const lista = items.filter(it=> lowStock(it) || validadeStatus(it).tone==="danger");
+      const texto = lista.map(it=> `- ${it.nome} (${it.categoria}) — estoque: ${it.quantidade} ${it.unidade||"un"} | mín: ${isFinite(it.min)?it.min:0}${it.validade?` | validade: ${it.validade}`:""}`).join("\n");
+      function copiar(){ navigator.clipboard?.writeText(texto).then(()=>alert("Lista copiada.")) .catch(()=>{ prompt("Copie a lista:", texto); }); }
+      return (
+        <div>
+          <p className="text-sm text-slate-600 mb-3">Itens com estoque abaixo do mínimo ou vencidos:</p>
+          <ul className="space-y-2">
+            {lista.length===0 && <li className="text-slate-500">Tudo em dia! 🎉</li>}
+            {lista.map(it=>{ const v=validadeStatus(it); return (
+              <li key={it.id} className="p-3 rounded-xl border border-slate-200 flex items-center justify-between">
+                <div>
+                  <div className="font-medium">{it.nome} <span className="text-xs text-slate-500">({it.categoria})</span></div>
+                  <div className="text-sm text-slate-600">Estoque: {it.quantidade} {it.unidade||"un"} • Mín: {isFinite(it.min)?it.min:0} • Validade: <Pill tone={v.tone}>{v.label}</Pill></div>
+                </div>
+                <div><Pill tone={lowStock(it)?"danger":"warning"}>{lowStock(it)?"Repor":"Atenção"}</Pill></div>
+              </li> ); })}
+          </ul>
+          {lista.length>0 && <div className="mt-4 flex gap-2"><button onClick={copiar} className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white">Copiar lista</button><button onClick={onPrint} className="px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50">Imprimir</button></div>}
+          <pre className="mt-4 p-3 bg-slate-50 rounded-xl text-sm overflow-auto whitespace-pre-wrap">{texto||""}</pre>
+        </div>
+      );
+    }
+
+    function AlmoxarifadoApp(){
+      const [profiles, setProfiles] = useLocalStorage(LS_PROFILES, [ {id:"voce", name:"Você", protected:false}, {id:"namorada", name:"Namorada", protected:false} ]);
+      const [activeId, setActiveId] = useLocalStorage(LS_ACTIVE, profiles[0]?.id || "voce");
+      const active = profiles.find(p=>p.id===activeId) || profiles[0] || {id:"voce", name:"Você", protected:false};
+
+      const [data, setData] = useState({ items:[], cats:CATEGORIAS_PADRAO });
+      const [locked, setLocked] = useState(false);
+      const [pendingDecryptPw, setPendingDecryptPw] = useState("");
+
+      // migração
+      useEffect(()=>{
+        try{
+          const migKey = `almoxarifado-migrated-v1::${active.id}`;
+          if(localStorage.getItem(migKey)) return;
+          const rawOldItems = localStorage.getItem(LS_KEY_OLD);
+          const rawOldCats = localStorage.getItem(LS_CAT_OLD);
+          if(active.id==="voce" && (rawOldItems||rawOldCats)){
+            const items = rawOldItems? JSON.parse(rawOldItems): [];
+            const cats = rawOldCats? JSON.parse(rawOldCats): CATEGORIAS_PADRAO;
+            try{ localStorage.setItem(LS_DATA_PREFIX+active.id, JSON.stringify({ items, cats })); localStorage.setItem(migKey, "1"); }catch{}
+          }
+        }catch{}
+      },[active.id]);
+
+      // carregar perfil
+      useEffect(()=>{
+        try{
+          const raw = localStorage.getItem(LS_DATA_PREFIX+active.id);
+          if(!raw){ setData({ items:[], cats:CATEGORIAS_PADRAO }); setLocked(false); return; }
+          const obj = JSON.parse(raw);
+          if(obj && obj.__enc){ setLocked(true); setData({ items:[], cats:[] }); }
+          else { setData({ items: obj.items||[], cats: obj.cats||CATEGORIAS_PADRAO }); setLocked(false); }
+        }catch{ setData({ items:[], cats:CATEGORIAS_PADRAO }); setLocked(false); }
+      },[active.id]);
+
+      // salvar dados
+      useEffect(()=>{ (async()=>{
+        try{
+          if(locked) return;
+          const key = LS_DATA_PREFIX+active.id;
+          if(active.protected){
+            if(!pendingDecryptPw) return;
+            const enc = await encryptJSON(data, pendingDecryptPw);
+            localStorage.setItem(key, JSON.stringify(enc));
+          } else {
+            localStorage.setItem(key, JSON.stringify(data));
+          }
+        }catch{}
+      })(); },[data, active.id, active.protected, locked, pendingDecryptPw]);
+
+      function nextDays(deltaDays){ const d=new Date(); d.setDate(d.getDate()+deltaDays); const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,"0"); const day=String(d.getDate()).padStart(2,"0"); return `${y}-${m}-${day}`; }
+
+      // exemplos iniciais (se vazio)
+      useEffect(()=>{
+        if((data.items||[]).length===0){
+          const ex = [
+            { id: uid(), nome: "Dipirona 500mg", categoria: "Remédios", quantidade: 8, unidade: "cp", min: 6, validade: nextDays(45), local: "Armário do banheiro", notas: "Analgésico", createdAt: Date.now()-1000000, updatedAt: Date.now()-1000000 },
+            { id: uid(), nome: "Paracetamol 750mg", categoria: "Remédios", quantidade: 2, unidade: "cp", min: 6, validade: nextDays(-5), local: "Armário do banheiro", notas: "Ver lote", createdAt: Date.now()-1000000, updatedAt: Date.now()-1000000 },
+            { id: uid(), nome: "Desodorante", categoria: "Cuidados Pessoais", quantidade: 1, unidade: "un", min: 1, validade: "", local: "Gaveta direita", notas: "Rexona", createdAt: Date.now()-900000, updatedAt: Date.now()-900000 },
+            { id: uid(), nome: "Algodão", categoria: "Papelaria", quantidade: 0, unidade: "pct", min: 1, validade: "", local: "Caixa 2", notas: "Bolinhas", createdAt: Date.now()-800000, updatedAt: Date.now()-800000 },
+            { id: uid(), nome: "Caneta esferográfica", categoria: "Papelaria", quantidade: 3, unidade: "un", min: 5, validade: "", local: "Prateleira", notas: "Azul", createdAt: Date.now()-700000, updatedAt: Date.now()-700000 },
+            { id: uid(), nome: "Pilhas AA", categoria: "Diversos", quantidade: 10, unidade: "un", min: 4, validade: nextDays(365), local: "Gaveta eletrônicos", notas: "Alcalina", createdAt: Date.now()-600000, updatedAt: Date.now()-600000 }
+          ];
+          setData(d=> ({...d, items: ex}));
+        }
+        try { if (typeof window !== 'undefined' && !window.__almox_tests) { runSelfTests(); window.__almox_tests = true; } } catch {}
+      }, []);
+
+      // CRUD
+      const [showForm, setShowForm] = useState(false);
+      const [editing, setEditing] = useState(null);
+      const [showCompras, setShowCompras] = useState(false);
+      const [showCats, setShowCats] = useState(false);
+      const [showProfiles, setShowProfiles] = useState(false);
+      const [unlockOpen, setUnlockOpen] = useState(false);
+
+      function addItem(){ setEditing(null); setShowForm(true); }
+      function saveItem(it){ setData(d=>{ const exists=d.items.some(p=>p.id===it.id); const items= exists? d.items.map(p=> p.id===it.id? {...it, updatedAt:Date.now()}: p): [{...it, createdAt:Date.now(), updatedAt:Date.now()}, ...d.items]; return {...d, items}; }); setShowForm(false); }
+      function editItem(it){ setEditing(it); setShowForm(true); }
+      function deleteItem(it){ setData(d=> ({...d, items: d.items.filter(p=>p.id!==it.id)})); }
+      function inc(it){ setData(d=> ({...d, items: d.items.map(p=> p.id===it.id? {...p, quantidade:(p.quantidade||0)+1, updatedAt:Date.now()}: p)})); }
+      function dec(it){ setData(d=> ({...d, items: d.items.map(p=> p.id===it.id? {...p, quantidade: Math.max(0,(p.quantidade||0)-1), updatedAt:Date.now()}: p)})); }
+
+      function setCats(fnOrArr){ setData(d=> ({...d, cats: typeof fnOrArr==='function'? fnOrArr(d.cats): fnOrArr })); }
+
+      const [query, setQuery] = useState("");
+      const [categoria, setCategoria] = useState("Todas");
+      const [sortBy, setSortBy] = useState("updated");
+
+      const displayCats = useMemo(()=>{ const set=new Set([...(data.cats||[])]); for(const it of data.items) if(it.categoria) set.add(it.categoria); return Array.from(set); },[data]);
+      useEffect(()=>{ if(categoria!=="Todas" && !displayCats.includes(categoria)) setCategoria("Todas"); },[displayCats]);
+
+      const filtered = useMemo(()=>{ let out=[...data.items]; if(categoria!=="Todas") out=out.filter(it=> it.categoria===categoria); if(query.trim()){ const q=query.toLowerCase(); out=out.filter(it=> it.nome.toLowerCase().includes(q) || (it.local||"").toLowerCase().includes(q) || (it.notas||"").toLowerCase().includes(q)); } switch(sortBy){ case "nome": out.sort((a,b)=> a.nome.localeCompare(b.nome,"pt-BR")); break; case "categoria": out.sort((a,b)=> a.categoria.localeCompare(b.categoria,"pt-BR")||a.nome.localeCompare(b.nome,"pt-BR")); break; case "quantidade": out.sort((a,b)=> b.quantidade-a.quantidade); break; case "validade": out.sort((a,b)=> (parseDate(a.validade)?.getTime()||Infinity)-(parseDate(b.validade)?.getTime()||Infinity)); break; default: out.sort((a,b)=> b.updatedAt-a.updatedAt); } return out; },[data.items, categoria, query, sortBy]);
+
+      const comprasCount = useMemo(()=> data.items.filter(it=> lowStock(it) || validadeStatus(it).tone==="danger").length, [data.items]);
+
+      function onPrint(){ try{ const w=window.open('', 'print', 'width=900,height=700'); if(!w){ if(typeof window.print==='function') window.print(); return; } const escape=(s)=> String(s??'').replace(/[&<>"']/g,(m)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m])); const base=filtered.length? filtered: data.items; const rows=base.map(it=> `<tr><td>${escape(it.nome)}</td><td>${escape(it.categoria)}</td><td>${it.quantidade??0}</td><td>${escape(it.unidade||'un')}</td><td>${isFinite(it.min)?it.min:0}</td><td>${escape(it.validade||'')}</td><td>${escape(it.local||'')}</td><td>${escape(it.notas||'')}</td></tr>`).join(''); w.document.write(`<!doctype html><html><head><meta charset=\"utf-8\"/><title>Inventário</title><style>body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:24px;}h1{font-size:18px;margin:0 0 12px;}table{width:100%;border-collapse:collapse;}th,td{border:1px solid #cbd5e1;padding:8px;font-size:12px;vertical-align:top;}th{background:#f1f5f9;text-transform:uppercase;letter-spacing:.03em;font-weight:600;}</style></head><body><h1>Inventário (${base.length} itens)</h1><table><thead><tr><th>Item</th><th>Categoria</th><th>Qtd</th><th>Unid</th><th>Mín</th><th>Validade</th><th>Local</th><th>Notas</th></tr></thead><tbody>${rows}</tbody></table><script>window.onload=function(){window.print(); setTimeout(()=>window.close(), 100);}</script></body></html>`); w.document.close(); }catch(e){ try{ window.print(); }catch{} } }
+
+      function getCounts(profileId){ try{ const raw=localStorage.getItem(LS_DATA_PREFIX+profileId); if(!raw) return "0 itens"; const obj=JSON.parse(raw); if(obj && obj.__enc) return "dados protegidos"; const n=(obj.items||[]).length; return `${n} item(ns)`; }catch{ return "0 itens"; } }
+      async function encryptAll(profileId, pw){ try{ const raw=localStorage.getItem(LS_DATA_PREFIX+profileId); const obj = raw? JSON.parse(raw): { items:[], cats:CATEGORIAS_PADRAO }; const enc = await encryptJSON(obj, pw); localStorage.setItem(LS_DATA_PREFIX+profileId, JSON.stringify(enc)); if(profileId===active.id){ setPendingDecryptPw(pw); setLocked(false); } }catch(e){ console.error(e); throw e; } }
+      async function decryptAll(profileId, pw, persistPlain=false){ const raw=localStorage.getItem(LS_DATA_PREFIX+profileId); if(!raw) { if(persistPlain) localStorage.setItem(LS_DATA_PREFIX+profileId, JSON.stringify({ items:[], cats:CATEGORIAS_PADRAO })); return; } const obj=JSON.parse(raw); if(!obj.__enc) { if(persistPlain) localStorage.setItem(LS_DATA_PREFIX+profileId, JSON.stringify(obj)); return; } const dec= await decryptJSON(obj, pw); if(persistPlain) localStorage.setItem(LS_DATA_PREFIX+profileId, JSON.stringify(dec)); if(profileId===active.id){ setData({ items:dec.items||[], cats:dec.cats||CATEGORIAS_PADRAO }); setPendingDecryptPw(""); setLocked(false); } }
+
+      function HeaderWrapper(){
+        return (
+          <Header onAdd={()=>setShowForm(true)} onPrint={onPrint} onShowCompras={()=>setShowCompras(true)} comprasCount={comprasCount} profiles={profiles} activeId={activeId} setActiveId={setActiveId} onManageProfiles={()=>setShowProfiles(true)} />
+        );
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-100">
+          <HeaderWrapper />
+
+          <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+            {locked && <div className="p-4 rounded-2xl border border-amber-300 bg-amber-50 text-amber-800">Perfil protegido. <button className="underline" onClick={()=>setUnlockOpen(true)}>Desbloquear agora</button>.</div>}
+
+            <Section title="Resumo"><Stats items={data.items} /></Section>
+
+            <Section title={<span className="inline-flex items-center gap-2"><Icon.Search className="w-5 h-5"/> Inventário</span>} right={<div className="flex items-center gap-3"><div className="relative w-72"><Icon.Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"/><input value={"" /* controlled below via state binding in this closure */} onChange={()=>{}} placeholder="" className="hidden"/></div><span className="text-xs text-slate-500"></span></div>}>
+              <InventorySection data={data} setData={setData} locked={locked} setShowForm={setShowForm} setEditing={setEditing} showCats={showCats} setShowCats={setShowCats} queryState={[query, setQuery]} categoriaState={[categoria, setCategoria]} sortState={[sortBy, setSortBy]} displayCats={displayCats} onInc={inc} onDec={dec} onEdit={editItem} onDelete={deleteItem} filtered={filtered} />
+            </Section>
+          </main>
+
+          <Modal open={showForm} onClose={()=>setShowForm(false)} title={editing?"Editar item":"Novo item"}>
+            <ItemForm initial={editing} onSubmit={(it)=>{ const exists=data.items.some(p=>p.id===it.id); const items= exists? data.items.map(p=> p.id===it.id? {...it, updatedAt:Date.now()}: p): [{...it, createdAt:Date.now(), updatedAt:Date.now()}, ...data.items]; setData(d=> ({...d, items})); setShowForm(false); }} onCancel={()=>setShowForm(false)} categorias={displayCats} onCreateCategoria={(nome)=> setData(d=> ({...d, cats: d.cats.includes(nome)? d.cats: [...d.cats, nome]}))} />
+          </Modal>
+
+          <ManageCategoriesModal open={showCats} onClose={()=>setShowCats(false)} categorias={data.cats} setCategorias={(cats)=> setData(d=> ({...d, cats}))} items={data.items} setItems={(items)=> setData(d=> ({...d, items}))} />
+
+          <ManageProfilesModal open={showProfiles} onClose={()=>setShowProfiles(false)} profiles={profiles} setProfiles={setProfiles} activeId={activeId} setActiveId={setActiveId} getCounts={getCounts} encSupport={!!hasSubtle} encryptAll={encryptAll} decryptAll={decryptAll} />
+
+          <Modal open={showCompras} onClose={()=>setShowCompras(false)} title="Lista de compras"><ComprasView items={data.items} onPrint={onPrint} /></Modal>
+
+          <UnlockModal open={unlockOpen} onClose={()=>setUnlockOpen(false)} onUnlock={(pw)=>{ (async()=>{ try{ const raw=localStorage.getItem(LS_DATA_PREFIX+active.id); if(!raw){ setLocked(false); setUnlockOpen(false); setPendingDecryptPw(pw); return; } const obj=JSON.parse(raw); const dec = await decryptJSON(obj, pw); if(!dec || !dec.items){ throw new Error('bad'); } setData({ items:dec.items||[], cats:dec.cats||CATEGORIAS_PADRAO }); setPendingDecryptPw(pw); setLocked(false); setUnlockOpen(false); }catch{ alert('Senha incorreta.'); } })(); }} profileName={active.name} />
+
+          <footer className="max-w-7xl mx-auto px-4 pb-10 pt-2 text-center text-xs text-slate-500">Feito com ♥ para organizar seu estoque por perfil. Dica: use o campo "mín" para gerar automaticamente a lista de compras quando faltar algo.</footer>
+
+          <style>{`
+            @media print { header, footer, .no-print { display: none !important; } main { padding: 0 !important; } body { background: white !important; } }
+          `}</style>
+        </div>
+      );
+
+      function InventorySection({ data, setData, locked, setShowForm, setEditing, showCats, setShowCats, queryState, categoriaState, sortState, displayCats, onInc, onDec, onEdit, onDelete, filtered }){
+        const [query, setQuery] = queryState;
+        const [categoria, setCategoria] = categoriaState;
+        const [sortBy, setSortBy] = sortState;
+        return (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="relative w-72">
+                <Icon.Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"/>
+                <input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="Buscar por nome, local ou notas..." className="w-full pl-10 pr-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-900 placeholder-slate-400"/>
+              </div>
+              <span className="text-xs text-slate-500">{filtered.length} itens</span>
+            </div>
+            <Toolbar categoria={categoria} setCategoria={setCategoria} sortBy={sortBy} setSortBy={setSortBy} categorias={displayCats} onManageCats={()=>setShowCats(true)} />
+            <Table items={filtered} onInc={onInc} onDec={onDec} onEdit={(it)=>{ if(locked) return; onEdit(it); }} onDelete={(it)=>{ if(locked) return; onDelete(it); }} />
+          </div>
+        );
+      }
+    }
+
+    // =============================
+    // Auto-testes (console)
+    // =============================
+    function runSelfTests(){
+      console.groupCollapsed("Almoxarifado – auto-testes");
+      console.assert(parseDate("2025-10-01") instanceof Date, "parseDate deve retornar Date válido");
+      console.assert(parseDate("")===null, "parseDate vazio deve retornar null");
+      console.assert(daysUntil(todayISO())>=-1, "daysUntil não deve falhar na data de hoje");
+      const itm1={ validade:"", quantidade:1, min:0 }; console.assert(validadeStatus(itm1).tone==="muted", "Sem validade => muted");
+      const tomorrow=(()=>{ const d=new Date(); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); })(); const itm2={ validade:tomorrow, quantidade:1, min:0 }; console.assert(["ok","warning"].includes(validadeStatus(itm2).tone), "Validade futura => ok/warning");
+      const past=(()=>{ const d=new Date(); d.setDate(d.getDate()-2); return d.toISOString().slice(0,10); })(); const itm3={ validade:past, quantidade:1, min:0 }; console.assert(validadeStatus(itm3).tone==="danger", "Validade passada => danger");
+      console.assert(lowStock({ quantidade:0, min:1 })===true, "0<1 => baixo estoque");
+      console.assert(lowStock({ quantidade:1, min:1 })===false, "igual ao mínimo => estoque ok");
+      console.assert(lowStock({ quantidade:2, min:3 })===true, "2<3 => baixo estoque");
+      console.assert(lowStock({ quantidade:3, min:2 })===false, "3>2 => ok");
+      const id1=uid(), id2=uid(); console.assert(id1!==id2, "uid deve gerar valores diferentes");
+      console.assert(classNames('a', null, undefined, 'b')==='a b', "classNames deve ignorar falsy");
+      console.groupEnd();
+    }
+
+    // monta app
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<AlmoxarifadoApp />);
+  </script>
+</body>
+</html>
